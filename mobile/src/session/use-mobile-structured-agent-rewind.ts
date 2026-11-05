@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import { AGENT_SESSION_CONVERSATION_COMMAND_TIMEOUT_MS } from '../../../src/shared/agent-session/agent-session-conversation-command'
+import { AGENT_SESSION_PHONE_REWIND_RUNTIME_CAPABILITY } from '../../../src/shared/agent-session/agent-session-runtime-capabilities'
 import type { AgentSessionRewindResult } from '../../../src/shared/agent-session/lifecycle/agent-session-rewind'
 import {
   createAgentSessionRewindHook,
@@ -7,11 +16,17 @@ import {
   type AgentSessionRewindSendOutcome
 } from '../../../src/shared/agent-session/lifecycle/agent-session-rewind-request'
 import type { StructuredAgentSessionState } from '../../../src/shared/agent-session/structured-agent-session-reducer'
-import type { RpcClient } from '../transport/rpc-client'
+import { pendingStructuredSessionPrompts } from '../../../src/shared/agent-session/view/structured-agent-session-message-projection'
+import { WorkspaceServerContext } from '../transport/workspace-server-context'
 import { sayMobileNativeChatRewind } from './native-chat/mobile-native-chat-rewind-copy'
+import type { MobileNativeChatSendOutcome } from './native-chat/mobile-native-chat-send'
 import { requestStructuredAgentSessionMutation } from './mobile-structured-agent-session-rpc'
 import { returnMobileNativeChatMessageToComposer } from './mobile-native-chat-message-hand-back'
 import type { useMobileStructuredAgentOptions } from './use-mobile-structured-agent-options'
+import type { MobileStructuredAgentSessionArgs } from './mobile-structured-agent-session-contract'
+import type { MobileStructuredBackgroundTasks } from './use-mobile-structured-background-tasks'
+import type { MobileStructuredSendsOut } from './use-mobile-structured-stop-offer'
+import { tuiAgentDisplayName } from '../../../src/shared/agent-launch/catalog/tui-agent-display-names'
 
 const useAgentSessionRewind = createAgentSessionRewindHook(
   { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState },
@@ -19,28 +34,45 @@ const useAgentSessionRewind = createAgentSessionRewindHook(
 )
 const presentation = () => () => true
 
-/** Desktop's "Rewind to here" for a phone chat; null `client` or a host without phone rewind offers none. */
-export function useMobileStructuredAgentRewind(args: {
-  client: RpcClient | null
-  sessionId: string | null
-  enabled: boolean
-  /** The host lets a phone call agentSession.rewind. */
-  offered: boolean
-  state: StructuredAgentSessionState
-  stateRef: { readonly current: StructuredAgentSessionState }
-  options: Pick<
-    ReturnType<typeof useMobileStructuredAgentOptions>,
-    'rewindSupport' | 'rewindBlockedReason'
-  >
-  blocked: boolean
-  composerScopeKey?: string | null
-  agentName?: string
-  notify: (text: string) => void
-}) {
-  const { agentName, blocked, client, composerScopeKey, enabled, notify, offered, sessionId } = args
-  const { state, stateRef } = args
+/** Desktop's "Rewind to here" for a phone chat, and the chat's send held while a rewind settles. */
+export function useMobileStructuredAgentRewind<A extends unknown[]>(
+  args: Pick<
+    MobileStructuredAgentSessionArgs,
+    'client' | 'sessionId' | 'enabled' | 'connected' | 'hostSupport' | 'agent' | 'composerScopeKey'
+  > & {
+    onSendError: (text: string) => void
+    state: StructuredAgentSessionState
+    stateRef: { readonly current: StructuredAgentSessionState }
+    options: Pick<
+      ReturnType<typeof useMobileStructuredAgentOptions>,
+      'rewindSupport' | 'rewindBlockedReason'
+    >
+    turnId: string | null
+    backgroundTasks: MobileStructuredBackgroundTasks
+    sendsOut: MobileStructuredSendsOut
+    commandPendingRef: { readonly current: boolean }
+    queuedMessages: readonly unknown[] | null
+    send: (...input: A) => Promise<MobileNativeChatSendOutcome>
+  }
+) {
+  const { client, composerScopeKey, onSendError: notify, sessionId, state, stateRef } = args
+  const enabled = args.enabled && args.connected
+  const agentName = args.agent ? (tuiAgentDisplayName(args.agent) ?? args.agent) : undefined
   const { rewindSupport, rewindBlockedReason } = args.options
-  const send = useCallback(
+  // A relaying desktop forwards only the methods it knows.
+  const relay = useContext(WorkspaceServerContext)
+  const offered =
+    args.hostSupport?.phoneRewind === true &&
+    (relay?.desktopCapabilities.includes(AGENT_SESSION_PHONE_REWIND_RUNTIME_CAPABILITY) ?? true)
+  // Desktop's busy facts: the host refuses a rewind behind any of them, queued cards included.
+  const blocked =
+    args.turnId !== null ||
+    args.backgroundTasks.view.isMonitoring ||
+    pendingStructuredSessionPrompts({ ...state, journalItems: state.items }).length > 0 ||
+    args.sendsOut.sending() ||
+    args.commandPendingRef.current ||
+    (args.queuedMessages?.length ?? 0) > 0
+  const rewindSend = useCallback(
     async (fields: {
       itemId: string
       expectedEpoch: string
@@ -84,7 +116,7 @@ export function useMobileStructuredAgentRewind(args: {
       support: offered && enabled ? rewindSupport?.support : undefined,
       hostBlockedReason: rewindBlockedReason,
       blocked,
-      send,
+      send: rewindSend,
       notify: { error: notify, message: notify }
     }),
     [
@@ -94,11 +126,18 @@ export function useMobileStructuredAgentRewind(args: {
       notify,
       offered,
       rewindBlockedReason,
+      rewindSend,
       rewindSupport,
-      send,
       sessionId,
       state
     ]
   )
-  return useAgentSessionRewind(input)
+  const { admitsSend, surface } = useAgentSessionRewind(input)
+  const { send } = args
+  const sendWithOutcome = useCallback(
+    (...sent: A): Promise<MobileNativeChatSendOutcome> =>
+      admitsSend() ? send(...sent) : Promise.resolve('rejected'),
+    [admitsSend, send]
+  )
+  return { rewind: surface, sendWithOutcome }
 }

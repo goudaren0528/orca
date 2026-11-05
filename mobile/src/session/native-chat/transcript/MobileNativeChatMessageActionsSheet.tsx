@@ -1,8 +1,7 @@
 import { useRef, useState } from 'react'
 import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
-import { Copy, TextSelect, Undo2, X } from 'lucide-react-native'
+import { Copy, TextSelect, X } from 'lucide-react-native'
 import type { NativeChatMessage } from '../../../../../src/shared/native-chat/native-chat-types'
-import type { AgentSessionRewindSurface } from '../../../../../src/shared/agent-session/lifecycle/agent-session-rewind-request'
 import { ActionSheetContent } from '../../../components/ActionSheetModal'
 import { BottomDrawer } from '../../../components/bottom-drawer/BottomDrawer'
 import { useClipboardWriter } from '../../../platform/clipboard'
@@ -13,18 +12,14 @@ import { useMobileColorScheme } from '../../../theme/use-mobile-color-scheme'
 import { translate } from '../../../i18n/mobile-i18n'
 import { useMobileTranslation } from '../../../i18n/use-mobile-translation'
 import { mobileNativeChatDisplayCopyText } from './mobile-native-chat-display-copy'
-import { confirmMobileNativeChatRewind } from './mobile-native-chat-rewind-confirm'
 
 type Props = {
   message: NativeChatMessage
-  /** Offered only on the chat's own turn openers it can rewind to. */
-  rewind?: AgentSessionRewindSurface
   onClose: () => void
 }
 
 export function MobileNativeChatMessageActionsSheet({
   message,
-  rewind,
   onClose
 }: Props): React.JSX.Element {
   const t = useMobileTranslation()
@@ -33,7 +28,6 @@ export function MobileNativeChatMessageActionsSheet({
   const [selecting, setSelecting] = useState(false)
   // Wait for the drawer to unmount before presenting another native modal.
   const selectRequested = useRef(false)
-  const rewindRequested = useRef(false)
   // Streaming updates must not reset an active native text selection.
   const [text] = useState(() => mobileNativeChatDisplayCopyText(message))
   const closeSheet = () => setSheetVisible(false)
@@ -43,16 +37,7 @@ export function MobileNativeChatMessageActionsSheet({
       <BottomDrawer
         visible={sheetVisible}
         onClose={closeSheet}
-        onAfterClose={() => {
-          if (selectRequested.current) {
-            setSelecting(true)
-            return
-          }
-          onClose()
-          if (rewindRequested.current && rewind) {
-            void rewind.request(message.id, confirmMobileNativeChatRewind)
-          }
-        }}
+        onAfterClose={() => (selectRequested.current ? setSelecting(true) : onClose())}
         dragContentToDismiss
       >
         <ActionSheetContent
@@ -85,21 +70,7 @@ export function MobileNativeChatMessageActionsSheet({
               onPress: () => {
                 selectRequested.current = true
               }
-            },
-            ...(rewind
-              ? [
-                  {
-                    id: 'rewind',
-                    label: t('chat.messageActionsSheet.rewind', 'Rewind to here'),
-                    icon: Undo2,
-                    disabled: Boolean(rewind.disabledReason),
-                    hint: rewind.disabledReason ?? undefined,
-                    onPress: () => {
-                      rewindRequested.current = true
-                    }
-                  }
-                ]
-              : [])
+            }
           ]}
         />
       </BottomDrawer>

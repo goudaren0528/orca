@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useContext, useMemo } from 'react'
 import type { NativeChatMessage } from '../../../../../src/shared/native-chat/native-chat-types'
 import { triggerMediumImpact } from '../../../platform/haptics'
 import { MobileNativeChatImageViewer } from '../visual/MobileNativeChatImageViewer'
@@ -12,35 +12,37 @@ import {
   type MobileNativeChatConversation
 } from '../use-mobile-native-chat-conversation-state'
 import type { MobileNativeChatImageSource } from '../visual/mobile-native-chat-image-preview'
-import type { AgentSessionRewindSurface } from '../../../../../src/shared/agent-session/lifecycle/agent-session-rewind-request'
+import { MobileNativeChatRewindContext } from './mobile-native-chat-rewind-context'
+import { useMobileNativeChatRewindDialog } from './use-mobile-native-chat-rewind-dialog'
+import { MobileNativeChatRewindDialog } from './MobileNativeChatRewindDialog'
 
 export function MobileNativeChatRowOverlaysHost({
   conversation,
   imageSource,
-  rewind,
   children
 }: {
   conversation: MobileNativeChatConversation
   imageSource?: MobileNativeChatImageSource
-  rewind?: AgentSessionRewindSurface
   children?: React.ReactNode
 }): React.JSX.Element {
+  const rewind = useContext(MobileNativeChatRewindContext)
+  const { openRewind, dialog, close: closeRewind } = useMobileNativeChatRewindDialog(rewind)
   // Keep pressed message text with its conversation so streaming cannot rewrite an open sheet.
   const [shown, setShown] = useMobileNativeChatConversationState<{
     image?: MobileNativeChatViewedImage
     actionsFor?: NativeChatMessage
-    rewindable?: boolean
   }>(conversation)
   const overlays = useMemo(
     () => ({
       openImage: (image: MobileNativeChatViewedImage) => setShown({ image }),
-      openActions: (actionsFor: NativeChatMessage, rewindable?: boolean) => {
+      openActions: (actionsFor: NativeChatMessage) => {
         triggerMediumImpact()
-        setShown({ actionsFor, rewindable })
+        setShown({ actionsFor })
       },
+      openRewind,
       imageSource
     }),
-    [setShown, imageSource]
+    [setShown, openRewind, imageSource]
   )
   // Memoize overlay callbacks so streamed words cannot rebuild them.
   const opened = useMemo(() => {
@@ -48,21 +50,14 @@ export function MobileNativeChatRowOverlaysHost({
     return shown?.image ? (
       <MobileNativeChatImageViewer {...shown.image} onClose={close} />
     ) : shown?.actionsFor ? (
-      <MobileNativeChatMessageActionsSheet
-        message={shown.actionsFor}
-        rewind={
-          shown.rewindable && rewind?.eligibleItemIds?.has(shown.actionsFor.id) !== false
-            ? rewind
-            : undefined
-        }
-        onClose={close}
-      />
+      <MobileNativeChatMessageActionsSheet message={shown.actionsFor} onClose={close} />
     ) : null
-  }, [shown, setShown, rewind])
+  }, [shown, setShown])
   return (
     <MobileNativeChatRowOverlaysContext.Provider value={overlays}>
       {children}
       {opened}
+      {dialog ? <MobileNativeChatRewindDialog dialog={dialog} onClose={closeRewind} /> : null}
     </MobileNativeChatRowOverlaysContext.Provider>
   )
 }

@@ -1,8 +1,5 @@
 import { asyncQuestionSourceScope as questionSourceScope } from '../../../src/shared/native-chat/input/native-chat-ask'
-import { useCallback, useContext, useMemo, useRef } from 'react'
-import { AGENT_SESSION_PHONE_REWIND_RUNTIME_CAPABILITY } from '../../../src/shared/agent-session/agent-session-runtime-capabilities'
-import { pendingStructuredSessionPrompts } from '../../../src/shared/agent-session/view/structured-agent-session-message-projection'
-import { WorkspaceServerContext } from '../transport/use-workspace-client'
+import { useMemo, useRef } from 'react'
 import { encodeNativeChatTranscriptIdentity } from '../../../src/shared/native-chat/transcript/native-chat-transcript-retention'
 import { projectStructuredAgentSessionMessages } from '../../../src/shared/agent-session/view/structured-agent-session-message-projection'
 import { createStructuredQuestionProjection } from '../../../src/shared/structured-agent-question-projection'
@@ -39,7 +36,7 @@ import { useMobileStructuredSessionOptionStamp } from './use-mobile-structured-s
 import { useMobileStructuredAgentTurnTiming } from './use-mobile-structured-agent-turn-timing'
 import {
   pendingStructuredPromptIdentity,
-  requestMobileStructuredAgentSessionCancel
+  useMobileStructuredRequestCancel
 } from './mobile-structured-agent-session-cancel'
 import { useMobileStructuredAgentMutate } from './use-mobile-structured-agent-mutation'
 import { useMobileStructuredSendWithOutcome } from './use-mobile-structured-send-with-outcome'
@@ -75,13 +72,9 @@ export function useMobileStructuredAgentSession(
   const queueCapable = hostSupport?.queuedMessages === true
   const commandsWait = queueCapable && hostSupport?.queuedCommands === true
   const queueFollowUps = useQueueFollowUps(client, connected && enabled, sessionId, paired, enabled)
-  const promptCancelSupported = hostSupport?.promptCancel ?? null
-  const hostAnswersRepeatedStops = hostSupport?.quietRepeatedStop ?? null
   const hostStopsConversation = hostSupport?.conversationStop ?? null
   const sessionKey = encodeNativeChatTranscriptIdentity([sourceIdentity, agent, sessionId])
   const commandPendingRef = useRef(false)
-  // Legacy hosts must join repeated Stop while the first turn cancel remains pending.
-  const inFlightStopsRef = useRef(new Map<string, Promise<boolean>>())
   const stateArgs = { client, sessionId, sessionKey, enabled, connected, onCommandsChanged }
   const { state, stateRef, queuedMessages, queuePause, olderPages, loadEarlier } =
     useMobileStructuredAgentState(stateArgs)
@@ -217,39 +210,18 @@ export function useMobileStructuredAgentSession(
     }),
     [approvalPrompt, questionPrompt, queueSendsNext, turnId]
   )
-  const workspaceServer = useContext(WorkspaceServerContext)
-  const rewind = useMobileStructuredAgentRewind({
-    client,
-    sessionId,
-    enabled: enabled && connected,
-    // A relaying desktop forwards only the methods it knows.
-    offered:
-      hostSupport?.phoneRewind === true &&
-      (workspaceServer?.desktopCapabilities.includes(
-        AGENT_SESSION_PHONE_REWIND_RUNTIME_CAPABILITY
-      ) ??
-        true),
+  const { rewind, sendWithOutcome } = useMobileStructuredAgentRewind({
+    ...args,
     state,
     stateRef,
     options,
-    // What the host refuses a rewind behind, its queued cards (paused ones included) among them.
-    blocked:
-      turnId !== null ||
-      backgroundTasks.view.isMonitoring ||
-      pendingStructuredSessionPrompts({ ...state, journalItems: state.items }).length > 0 ||
-      sendsOut.sending() ||
-      commandPendingRef.current ||
-      (queuedMessages?.length ?? 0) > 0,
-    composerScopeKey: args.composerScopeKey,
-    ...(agent ? { agentName: tuiAgentDisplayName(agent) ?? agent } : {}),
-    notify: onSendError
+    turnId,
+    backgroundTasks,
+    sendsOut,
+    commandPendingRef,
+    queuedMessages,
+    send: sendWithOutcomeUngated
   })
-  const { admitsSend } = rewind
-  const sendWithOutcome = useCallback(
-    (...input: Parameters<typeof sendWithOutcomeUngated>) =>
-      admitsSend() ? sendWithOutcomeUngated(...input) : Promise.resolve('rejected' as const),
-    [admitsSend, sendWithOutcomeUngated]
-  )
   const queued = useMobileStructuredQueuedMessageControls({
     ...args,
     appendComposerText: args.appendComposerText,
@@ -270,31 +242,14 @@ export function useMobileStructuredAgentSession(
     ...(onActionResolved ? { onActionResolved } : {})
   })
   // Stop preserves host-held cards under queue pause; only a later user action resumes them.
-  const requestCancel = useCallback(
-    (prompt?: { itemId: string; expectedRevision: number }): Promise<boolean> =>
-      requestMobileStructuredAgentSessionCancel({
-        client,
-        enabled,
-        hostAnswersRepeatedStops,
-        hostStopsConversation,
-        inFlight: inFlightStopsRef.current,
-        onSendError,
-        prompt,
-        promptCancelSupported,
-        sessionId,
-        stateRef
-      }),
-    [
-      client,
-      enabled,
-      hostAnswersRepeatedStops,
-      hostStopsConversation,
-      onSendError,
-      promptCancelSupported,
-      sessionId,
-      stateRef
-    ]
-  )
+  const requestCancel = useMobileStructuredRequestCancel({
+    client,
+    enabled,
+    hostSupport,
+    onSendError,
+    sessionId,
+    stateRef
+  })
 
   const visualSource = useMemo<MobileNativeChatVisualSource | null>(
     () => (client && sessionId ? { client, sessionId } : null),
@@ -337,6 +292,6 @@ export function useMobileStructuredAgentSession(
     queued,
     commandRefusalCauses,
     backgroundTasks,
-    rewind: rewind.surface
+    rewind
   }
 }
