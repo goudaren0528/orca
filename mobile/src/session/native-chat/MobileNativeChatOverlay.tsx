@@ -264,6 +264,7 @@ export function MobileNativeChatOverlay({
                     skillDiscovery={controller.nativeChatSkills}
                     onNeedSkills={controller.loadNativeChatSkills}
                     sessionOptions={controller.nativeChatSessionOptions}
+                    contextUsage={controller.nativeChatContextUsage}
                     structuredComposer={structuredComposer}
                     keyboardInset={keyboardInset}
                   />

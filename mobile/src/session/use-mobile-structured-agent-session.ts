@@ -46,6 +46,7 @@ import { useMobileStructuredSends } from './use-mobile-structured-sends'
 import { useMobileNativeChatQueueFollowUps as useQueueFollowUps } from './use-mobile-native-chat-queue-follow-ups'
 import { useMobileStructuredStopOffer } from './use-mobile-structured-stop-offer'
 import { useMobileStructuredTurnIndicator } from './use-mobile-structured-turn-indicator'
+import { useMobileStructuredContextUsage } from './use-mobile-structured-context-usage'
 
 const mobileStructuredTranscript = createStructuredQuestionProjection(
   projectStructuredAgentStartItem
@@ -106,9 +107,11 @@ export function useMobileStructuredAgentSession(
     mutate,
     optionStamp,
     turnId,
+    unloadedTurnRevisions: state.unloadedTurnRevisions,
     hostSupport
   })
   const sendController = useMobileStructuredCommandController(options)
+  const { contextUsageSupport, ...optionFields } = options
 
   const { respondPermission, respondQuestion } = useMobileStructuredPromptResponses({
     stateRef,
@@ -265,7 +268,8 @@ export function useMobileStructuredAgentSession(
   )
 
   return {
-    ...options,
+    ...optionFields,
+    contextUsage: useMobileStructuredContextUsage(state.items, contextUsageSupport, state.epoch),
     visualSource,
     asyncQuestionSourceScope: questionSourceScope({ kind: 'journal', agent, sessionId, epoch }),
     imagePreviewsByMessageId: sends.imagePreviewsByMessageId,
