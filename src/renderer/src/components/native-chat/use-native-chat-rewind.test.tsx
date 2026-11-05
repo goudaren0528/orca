@@ -3,7 +3,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const toastError = vi.hoisted(() => vi.fn())
-vi.mock('sonner', () => ({ toast: { error: toastError } }))
+vi.mock('sonner', () => ({ toast: { error: toastError, message: vi.fn() } }))
 
 import { AGENT_SESSION_REWIND_REASONS } from '../../../../shared/agent-session/lifecycle/agent-session-rewind'
 import { EMPTY_STRUCTURED_AGENT_SESSION } from '../../../../shared/agent-session/structured-agent-session-reducer'
@@ -187,6 +187,27 @@ describe('structured chat rewind', () => {
     })
     expect(view.result.current.pending).toBe(false)
     expect(view.result.current.blockedRef.current).toBe(false)
+  })
+
+  it("holds only its own chat's sends when the view moves to another chat mid-rewind", async () => {
+    const props = input(),
+      response = deferred<typeof done>()
+    props.send.mockReturnValue(response.promise)
+    const view = render(props)
+    let request!: Promise<void>
+    await act(async () => {
+      request = view.result.current.request('user', async () => true)
+    })
+    view.rerender({ ...props, sessionId: 'other' })
+    expect(view.result.current.disabledReason).toBeNull()
+    expect(view.result.current.admitsSend()).toBe(true)
+    view.rerender(props)
+    expect(view.result.current.admitsSend()).toBe(false)
+    await act(async () => {
+      view.rerender({ ...props, state: { ...props.state, epoch: 'new', items: [] } })
+      response.resolve(done)
+      await request
+    })
   })
 
   it("lets the host's in-doubt latch disable only the action, never sending", async () => {

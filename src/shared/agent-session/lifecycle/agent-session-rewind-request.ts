@@ -1,21 +1,18 @@
 import type * as React from 'react'
 import {
   AGENT_SESSION_REWIND_REASONS,
-  savedRewindKeys,
-  isAgentSessionRewindTarget,
   type AgentSessionRewindReason,
   type AgentSessionRewindResult,
   type AgentSessionRewindSupport
 } from './agent-session-rewind'
-import { readAgentJournalTurn } from './agent-session-turn-record'
+import {
+  agentSessionRewindContextFloor,
+  agentSessionRewindTargetIds
+} from './agent-session-rewind-targets'
 import type { AgentSessionWriteFailure } from '../failures/agent-session-write-failure'
 import type { StructuredAgentSessionState } from '../structured-agent-session-reducer'
 import type { AgentJournalMessageItem } from '../journal/agent-session-journal-types'
 import { nativeChatRewindOffered } from '../../native-chat/native-chat-rewind-eligibility'
-import {
-  agentSessionContextFloorSequence,
-  latestAgentSessionContextClearSequence
-} from '../agent-session-context-clear'
 import type { AgentJournalCursor } from '../journal/agent-session-journal-identity'
 
 /** How long a confirmed rewind waits for its new conversation before letting go. */
@@ -91,42 +88,6 @@ function rewindFailureReason(failure: AgentSessionWriteFailure): string | undefi
     : undefined
 }
 
-function rewindTargetIds(
-  { items, submissions }: Pick<StructuredAgentSessionState, 'items' | 'submissions'>,
-  floor: number
-): ReadonlySet<string> {
-  const opener = turnOpeners(items)
-  const keys = savedRewindKeys(submissions)
-  return new Set(
-    items
-      .filter(
-        (item) =>
-          item.sequence > floor &&
-          (keys.nativeIdentity(item.itemId) !== null || !keys.hasSubmission(item.itemId)) &&
-          isAgentSessionRewindTarget(item, (turn) => opener.get(turn))
-      )
-      .map((item) => item.itemId)
-  )
-}
-
-function turnOpeners(items: StructuredAgentSessionState['items']): Map<string, string> {
-  const openers = new Map<string, string>()
-  for (const item of items) {
-    const opener = readAgentJournalTurn(item.body)?.userItemId
-    if (opener) {
-      openers.set(item.itemId, opener)
-    }
-  }
-  return openers
-}
-
-function rewindContextFloor(input: AgentSessionRewindInput): number {
-  return Math.max(
-    latestAgentSessionContextClearSequence(input.state.items),
-    agentSessionContextFloorSequence(input.contextFloor, input.state.epoch)
-  )
-}
-
 function blockedNotice(input: AgentSessionRewindInput): AgentSessionRewindNotice | null {
   if (input.hostBlockedReason) {
     return agentSessionRewindReasonNotice(input.hostBlockedReason)
@@ -181,8 +142,9 @@ export function createAgentSessionRewindHook(
       }
     }, [input])
     // Reserve single-flight at the first click; only confirmed sending blocks other actions.
-    const inFlight = useRef(false)
-    const [sending, setSending] = useState(false)
+    // Both name their session: one phone view moves between chats, and another chat's rewind holds nothing here.
+    const inFlight = useRef<string | null>(null)
+    const [sending, setSending] = useState<string | null>(null)
     const [awaiting, setAwaiting] = useState<{
       sessionId: string
       epoch: string
@@ -212,7 +174,7 @@ export function createAgentSessionRewindHook(
       }, AGENT_SESSION_REWIND_RESET_TIMEOUT_MS)
       return () => clearTimeout(timer)
     }, [awaiting, awaitingReset])
-    const pending = sending || awaitingReset
+    const pending = sending === input.sessionId || awaitingReset
     const disabledReason = pending ? say('pending') : blockedReason(input)
     const blockedRef = useRef(false)
     useLayoutEffect(() => {
@@ -222,16 +184,19 @@ export function createAgentSessionRewindHook(
     const request = useCallback(async (itemId: string, confirm: () => Promise<boolean>) => {
       const captured = latest.current
       if (
-        inFlight.current ||
+        inFlight.current === captured.sessionId ||
         blockedRef.current ||
         blockedReason(captured) ||
-        !rewindTargetIds(captured.state, rewindContextFloor(captured)).has(itemId)
+        !agentSessionRewindTargetIds(
+          captured.state,
+          agentSessionRewindContextFloor(captured.state, captured.contextFloor)
+        ).has(itemId)
       ) {
         return
       }
       const isCurrent = captured.capturePresentation()
       const expectedEpoch = captured.state.epoch!
-      inFlight.current = true
+      inFlight.current = captured.sessionId
       let keepBlocked = false
       try {
         const confirmed = await confirm()
@@ -257,7 +222,7 @@ export function createAgentSessionRewindHook(
           return
         }
         blockedRef.current = true
-        setSending(true)
+        setSending(captured.sessionId)
         const outcome = await current.send({ itemId, expectedEpoch })
         const reason =
           outcome.kind === 'not-done' ? rewindFailureReason(outcome.failure) : undefined
@@ -304,9 +269,13 @@ export function createAgentSessionRewindHook(
             : say(agentSessionRewindReasonNotice(reason))
         )
       } finally {
-        inFlight.current = false
-        blockedRef.current = keepBlocked
-        setSending(false)
+        if (inFlight.current === captured.sessionId) {
+          inFlight.current = null
+        }
+        if (latest.current.sessionId === captured.sessionId) {
+          blockedRef.current = keepBlocked
+        }
+        setSending((current) => (current === captured.sessionId ? null : current))
       }
     }, [])
     /** Refuse sends during confirmed rewind and explain why. */
@@ -317,10 +286,10 @@ export function createAgentSessionRewindHook(
       return !blockedRef.current
     }, [])
     const offered = nativeChatRewindOffered(input.support)
-    const floor = rewindContextFloor(input)
+    const floor = agentSessionRewindContextFloor(input.state, input.contextFloor)
     const { items, submissions } = input.state
     const eligibleItemIds = useMemo(
-      () => rewindTargetIds({ items, submissions }, floor),
+      () => agentSessionRewindTargetIds({ items, submissions }, floor),
       [floor, items, submissions]
     )
     // Memoize row actions and omit them entirely for providers without rewind.

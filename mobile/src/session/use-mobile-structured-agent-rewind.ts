@@ -56,7 +56,8 @@ export function useMobileStructuredAgentRewind<A extends unknown[]>(
   }
 ) {
   const { client, composerScopeKey, onSendError: notify, sessionId, state, stateRef } = args
-  const enabled = args.enabled && args.connected
+  const { connected } = args
+  const enabled = args.enabled && connected
   const agentName = args.agent ? (tuiAgentDisplayName(args.agent) ?? args.agent) : undefined
   const { rewindSupport, rewindBlockedReason } = args.options
   // A relaying desktop forwards only the methods it knows.
@@ -111,6 +112,8 @@ export function useMobileStructuredAgentRewind<A extends unknown[]>(
               returnMobileNativeChatMessageToComposer(composerScopeKey, `rewound-${itemId}`, blocks)
           }
         : {}),
+      // A dropped link (the app in the background) reads nothing, so a late reset isn't a failure.
+      isVisible: connected,
       state,
       contextFloor: rewindSupport?.contextFloor,
       support: offered && enabled ? rewindSupport?.support : undefined,
@@ -121,6 +124,7 @@ export function useMobileStructuredAgentRewind<A extends unknown[]>(
     }),
     [
       blocked,
+      connected,
       composerScopeKey,
       enabled,
       notify,
